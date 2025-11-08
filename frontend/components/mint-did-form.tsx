@@ -1,7 +1,10 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { User, Mail, Shield, Upload } from "lucide-react"
+import { useSetIdentity } from "@/hooks/useDidContract"
+import { uploadIdentityToIPFS } from "@/utils/ipfs"
+import { useAccount } from "wagmi"
 
 export default function MintDIDForm() {
   const [formData, setFormData] = useState({
@@ -11,6 +14,30 @@ export default function MintDIDForm() {
   })
 
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [success, setSuccess] = useState(false)
+
+  const { address } = useAccount()
+  const { setIdentity, isPending, wait, error: contractError } = useSetIdentity()
+
+  // Update success state when transaction is confirmed
+  useEffect(() => {
+    if (wait?.isSuccess) {
+      setSuccess(true)
+      setIsSubmitting(false)
+      // Reset form after successful submission
+      setFormData({
+        name: "",
+        email: "",
+        profilePicture: null
+      })
+      alert("Your DID has been successfully minted on the blockchain!")
+    }
+    if (wait?.isError || contractError) {
+      setError(contractError?.message || "Transaction failed")
+      setIsSubmitting(false)
+    }
+  }, [wait?.isSuccess, wait?.isError, contractError])
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target
@@ -32,21 +59,41 @@ export default function MintDIDForm() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    setError(null)
+    setSuccess(false)
     setIsSubmitting(true)
-    
-    // Simulate minting process
-    await new Promise(resolve => setTimeout(resolve, 2000))
-    
-    console.log("DID minted:", formData)
-    alert("Your DID has been successfully minted!")
-    setIsSubmitting(false)
-    
-    // Reset form
-    setFormData({
-      name: "",
-      email: "",
-      profilePicture: null
-    })
+
+    try {
+      // Check if wallet is connected
+      if (!address) {
+        throw new Error("Please connect your wallet first")
+      }
+
+      // Check if Pinata JWT is configured
+      if (!process.env.NEXT_PUBLIC_PINATA_JWT) {
+        throw new Error("IPFS service not configured. Please set NEXT_PUBLIC_PINATA_JWT environment variable.")
+      }
+
+      // Step 1: Upload image and metadata to IPFS
+      const metadataHash = await uploadIdentityToIPFS(
+        formData.name,
+        formData.email,
+        formData.profilePicture
+      )
+
+      // Step 2: Set identity on contract with IPFS hash
+      setIdentity(`ipfs://${metadataHash}`)
+
+      // Note: Transaction confirmation is handled by the wait hook via useEffect
+      // The success state will be updated when the transaction is confirmed
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : "An unknown error occurred"
+      setError(errorMessage)
+      console.error("Error minting DID:", err)
+      alert(`Error: ${errorMessage}`)
+    } finally {
+      setIsSubmitting(false)
+    }
   }
 
   return (
@@ -134,21 +181,39 @@ export default function MintDIDForm() {
               </div>
             </div>
 
+            {/* Error Display */}
+            {error && (
+              <div className="bg-red-500/20 border-2 border-red-500/50 p-4 text-red-200">
+                <p className="font-semibold">Error:</p>
+                <p>{error}</p>
+              </div>
+            )}
+
+            {/* Success Display */}
+            {success && (
+              <div className="bg-green-500/20 border-2 border-green-500/50 p-4 text-green-200">
+                <p className="font-semibold">Success!</p>
+                <p>Your DID has been successfully minted on the blockchain.</p>
+              </div>
+            )}
+
             {/* Submit Button */}
             <div className="pt-6">
               <button
                 type="submit"
-                disabled={isSubmitting}
+                disabled={isSubmitting || isPending || !address}
                 className="w-full arcane-purple-bg off-white py-4 px-6 font-semibold transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
                 style={{
                   clipPath: "polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px))",
                 }}
               >
-                {isSubmitting ? (
+                {isSubmitting || isPending ? (
                   <div className="flex items-center justify-center gap-2">
                     <div className="w-4 h-4 border-2 border-off-white/30 border-t-off-white rounded-full animate-spin"></div>
-                    <span>Minting Your DID...</span>
+                    <span>{isSubmitting ? "Uploading to IPFS..." : "Confirming transaction..."}</span>
                   </div>
+                ) : !address ? (
+                  "Connect Wallet to Mint"
                 ) : (
                   "Mint DID"
                 )}

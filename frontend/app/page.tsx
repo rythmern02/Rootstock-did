@@ -1,11 +1,15 @@
 "use client"
 
 import { useState } from "react"
+import { useAccount, useConnect, useDisconnect } from "wagmi"
 import MintDIDForm from "@/components/mint-did-form"
 import MyDIDView from "@/components/my-did-view"
 
 export default function Home() {
   const [activeView, setActiveView] = useState<"mint" | "my-did">("mint")
+  const { address, isConnected } = useAccount()
+  const { connect, connectors, isPending: isConnecting } = useConnect()
+  const { disconnect } = useDisconnect()
 
   return (
     <div className="arcane-bg min-h-screen relative overflow-hidden">
@@ -27,7 +31,7 @@ export default function Home() {
             Rootstock DID
           </h1>
           
-          <div className="flex items-center justify-center gap-4">
+          <div className="flex items-center justify-center gap-4 flex-wrap">
             <button
               onClick={() => setActiveView("mint")}
               className={`px-8 py-4 font-semibold transition-all duration-300 ${
@@ -54,6 +58,43 @@ export default function Home() {
             >
               My DID
             </button>
+            {!isConnected ? (
+              <button
+                onClick={() => {
+                  const injectedConnector = connectors.find((c) => c.id === "injected" || c.type === "injected")
+                  if (injectedConnector) {
+                    connect({ connector: injectedConnector })
+                  } else if (connectors.length > 0) {
+                    connect({ connector: connectors[0] })
+                  }
+                }}
+                disabled={isConnecting}
+                className="px-8 py-4 font-semibold transition-all duration-300 border-2 border-white/60 off-white hover:border-white disabled:opacity-50 disabled:cursor-not-allowed"
+                style={{
+                  clipPath: "polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px))",
+                }}
+              >
+                {isConnecting ? "Connecting..." : "Connect Wallet"}
+              </button>
+            ) : (
+              <div className="flex items-center gap-3">
+                <div className="px-4 py-2 bg-black/60 border-2 border-white/30 text-sm off-white">
+                  <span className="text-white/60">Wallet: </span>
+                  <span className="font-mono">
+                    {address?.slice(0, 6)}...{address?.slice(-4)}
+                  </span>
+                </div>
+                <button
+                  onClick={() => disconnect()}
+                  className="px-6 py-2 font-semibold transition-all duration-300 border-2 border-white/60 off-white hover:border-white text-sm"
+                  style={{
+                    clipPath: "polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px))",
+                  }}
+                >
+                  Disconnect
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </header>

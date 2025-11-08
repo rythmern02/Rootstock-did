@@ -1,27 +1,119 @@
 "use client"
 
-import { useState } from "react"
-import { Copy, Eye, EyeOff, Lock, CheckCircle2, Calendar } from "lucide-react"
+import { useState, useEffect } from "react"
+import { Copy, Eye, EyeOff, Lock, CheckCircle2, Calendar, Loader2 } from "lucide-react"
+import { useAccount } from "wagmi"
+import { useGetIdentityMetadata } from "@/hooks/useDidContract"
+import { fetchMetadataFromIPFS } from "@/utils/ipfs"
+
+interface DIDMetadata {
+  name: string
+  email: string
+  image?: string
+  description?: string
+  createdAt?: string
+}
 
 export default function MyDIDView() {
   const [copied, setCopied] = useState(false)
   const [revealed, setRevealed] = useState(false)
-  
-  const didData = {
-    did: "did:rsk:0x4a7b9c2e1f8d5a3b6c9e2f1a4d7b8c9e",
-    name: "John Doe",
-    email: "john.doe@example.com",
-    status: "Active",
-    verified: true,
-    mintedDate: "2025-01-15",
-    blockchain: "Rootstock",
-    network: "Mainnet"
-  }
+  const [metadata, setMetadata] = useState<DIDMetadata | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const { address } = useAccount()
+  const { data: identityData, isLoading: isLoadingIdentity, error: identityError } = useGetIdentityMetadata(address)
+
+  // Fetch metadata from IPFS when identity data is available
+  useEffect(() => {
+    const loadMetadata = async () => {
+      if (!identityData || !address) {
+        setLoading(false)
+        return
+      }
+
+      const document = identityData.document as string
+      if (!document || document === "") {
+        setError("No identity found for this address")
+        setLoading(false)
+        return
+      }
+
+      try {
+        setLoading(true)
+        setError(null)
+        const fetchedMetadata = await fetchMetadataFromIPFS(document)
+        setMetadata(fetchedMetadata)
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : "Failed to load metadata"
+        setError(errorMessage)
+        console.error("Error fetching metadata:", err)
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    loadMetadata()
+  }, [identityData, address])
+
+  const didAddress = address ? `did:rsk:${address}` : "Not connected"
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(didData.did)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+    if (address) {
+      navigator.clipboard.writeText(didAddress)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    }
+  }
+
+  // Format timestamp from contract
+  const formatDate = (timestamp: bigint | undefined) => {
+    if (!timestamp) return "N/A"
+    return new Date(Number(timestamp) * 1000).toLocaleDateString()
+  }
+
+  // Show loading state
+  if (!address) {
+    return (
+      <section className="max-w-3xl mx-auto">
+        <div className="arcane-card-bg border-2 border-white/40 p-10 relative group">
+          <div className="relative z-10 text-center">
+            <Lock size={48} className="text-white/60 mx-auto mb-4" />
+            <h2 className="heading-arcane text-2xl off-white mb-4">Connect Your Wallet</h2>
+            <p className="text-off-white/70">Please connect your wallet to view your DID</p>
+          </div>
+        </div>
+      </section>
+    )
+  }
+
+  if (isLoadingIdentity || loading) {
+    return (
+      <section className="max-w-3xl mx-auto">
+        <div className="arcane-card-bg border-2 border-white/40 p-10 relative group">
+          <div className="relative z-10 text-center">
+            <Loader2 size={48} className="text-white mx-auto mb-4 animate-spin" />
+            <h2 className="heading-arcane text-2xl off-white mb-4">Loading Your DID...</h2>
+            <p className="text-off-white/70">Fetching identity from blockchain</p>
+          </div>
+        </div>
+      </section>
+    )
+  }
+
+  if (error || identityError || !identityData || !identityData.document || identityData.document === "") {
+    return (
+      <section className="max-w-3xl mx-auto">
+        <div className="arcane-card-bg border-2 border-white/40 p-10 relative group">
+          <div className="relative z-10">
+            <div className="bg-red-500/20 border-2 border-red-500/50 p-4 text-red-200 mb-4">
+              <p className="font-semibold">No Identity Found</p>
+              <p>{error || identityError?.message || "You haven't minted a DID yet. Go to the Mint tab to create one."}</p>
+            </div>
+          </div>
+        </div>
+      </section>
+    )
   }
 
   return (
@@ -45,7 +137,7 @@ export default function MyDIDView() {
             <div className="bg-black/60 border-2 border-white/30 p-8 relative group/did">
               <div className="flex items-center gap-4 relative z-10">
                 <code className="monospace-runes text-white flex-1 text-sm break-all font-bold tracking-wider">
-                  {revealed ? didData.did : "did:rsk:●●●●●●●●●●●●●●●●●●●●●●●"}
+                  {revealed ? didAddress : "did:rsk:●●●●●●●●●●●●●●●●●●●●●●●"}
                 </code>
 
                 <div className="flex gap-2">
@@ -82,16 +174,35 @@ export default function MyDIDView() {
             </div>
           </div>
 
+          {/* Profile Image */}
+          {metadata?.image && (
+            <div className="mb-6 flex justify-center">
+              <div className="w-32 h-32 rounded-full overflow-hidden border-4 border-white/30">
+                <img
+                  src={metadata.image.replace(/^ipfs:\/\//, "https://gateway.pinata.cloud/ipfs/")}
+                  alt="Profile"
+                  className="w-full h-full object-cover"
+                  onError={(e) => {
+                    // Fallback to other gateways if Pinata fails
+                    const img = e.target as HTMLImageElement
+                    const hash = metadata.image!.replace(/^ipfs:\/\//, "")
+                    img.src = `https://ipfs.io/ipfs/${hash}`
+                  }}
+                />
+              </div>
+            </div>
+          )}
+
           {/* DID Details */}
           <div className="space-y-4 mb-6">
             <div className="bg-white/10 border border-white/30 p-4">
               <div className="text-xs text-white/60 uppercase tracking-wider mb-1">Full Name</div>
-              <div className="text-lg font-bold text-white">{didData.name}</div>
+              <div className="text-lg font-bold text-white">{metadata?.name || "N/A"}</div>
             </div>
 
             <div className="bg-white/10 border border-white/30 p-4">
               <div className="text-xs text-white/60 uppercase tracking-wider mb-1">Email</div>
-              <div className="text-lg font-bold text-white">{didData.email}</div>
+              <div className="text-lg font-bold text-white">{metadata?.email || "N/A"}</div>
             </div>
 
             <div className="grid grid-cols-2 gap-4">
@@ -99,47 +210,51 @@ export default function MyDIDView() {
                 <div className="text-xs text-white/60 uppercase tracking-wider mb-1">Status</div>
                 <div className="text-lg font-bold text-white flex items-center gap-2">
                   <CheckCircle2 size={20} />
-                  {didData.status}
+                  Active
                 </div>
               </div>
 
               <div className="bg-white/10 border border-white/30 p-4">
                 <div className="text-xs text-white/60 uppercase tracking-wider mb-1 flex items-center gap-2">
                   <Calendar size={16} />
-                  Minted Date
+                  Updated At
                 </div>
-                <div className="text-lg font-bold text-white">{new Date(didData.mintedDate).toLocaleDateString()}</div>
+                <div className="text-lg font-bold text-white">{formatDate(identityData?.updatedAt)}</div>
               </div>
             </div>
 
             <div className="grid grid-cols-2 gap-4">
               <div className="bg-white/10 border border-white/30 p-4">
-                <div className="text-xs text-white/60 uppercase tracking-wider mb-1">Blockchain</div>
-                <div className="text-lg font-bold text-white">{didData.blockchain}</div>
+                <div className="text-xs text-white/60 uppercase tracking-wider mb-1">Version</div>
+                <div className="text-lg font-bold text-white">{identityData?.version?.toString() || "0"}</div>
               </div>
 
               <div className="bg-white/10 border border-white/30 p-4">
-                <div className="text-xs text-white/60 uppercase tracking-wider mb-1">Network</div>
-                <div className="text-lg font-bold text-white">{didData.network}</div>
+                <div className="text-xs text-white/60 uppercase tracking-wider mb-1">Blockchain</div>
+                <div className="text-lg font-bold text-white">Rootstock</div>
               </div>
             </div>
+
+            {metadata?.createdAt && (
+              <div className="bg-white/10 border border-white/30 p-4">
+                <div className="text-xs text-white/60 uppercase tracking-wider mb-1">Created At</div>
+                <div className="text-lg font-bold text-white">{new Date(metadata.createdAt).toLocaleDateString()}</div>
+              </div>
+            )}
           </div>
 
           {/* Verification Badge */}
           <div className="bg-white/10 border border-white/30 p-4 flex items-center gap-3">
-            <div className={`text-white flex items-center gap-2 ${didData.verified ? "" : "opacity-50"}`}>
-              {didData.verified ? (
-                <>
-                  <CheckCircle2 size={24} />
-                  <span className="font-bold">Verified Identity</span>
-                </>
-              ) : (
-                <>
-                  <Lock size={24} />
-                  <span className="font-bold">Unverified Identity</span>
-                </>
-              )}
+            <div className="text-white flex items-center gap-2">
+              <CheckCircle2 size={24} />
+              <span className="font-bold">Verified Identity</span>
             </div>
+          </div>
+
+          {/* IPFS Hash */}
+          <div className="bg-white/10 border border-white/30 p-4 mt-4">
+            <div className="text-xs text-white/60 uppercase tracking-wider mb-1">IPFS Hash</div>
+            <code className="text-sm text-white break-all">{identityData.document}</code>
           </div>
 
           {/* Warning */}
