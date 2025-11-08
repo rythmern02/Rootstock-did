@@ -35,7 +35,8 @@ import {
       functionName: "getIdentityMetadata",
       args: owner ? [owner] : undefined,
       query: {
-        enabled: Boolean(owner),
+        enabled: Boolean(owner) && Boolean(CONTRACT_ADDRESS && CONTRACT_ADDRESS !== "0x0000000000000000000000000000000000000000"),
+        retry: false, // Don't retry on revert
       },
     })
   }

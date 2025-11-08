@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react"
 import { Copy, Eye, EyeOff, Lock, CheckCircle2, Calendar, Loader2 } from "lucide-react"
 import { useAccount } from "wagmi"
-import { useGetIdentityMetadata } from "@/hooks/useDidContract"
+import { useGetIdentity, useGetIdentityMetadata } from "@/hooks/useDidContract"
 import { fetchMetadataFromIPFS } from "@/utils/ipfs"
 
 interface DIDMetadata {
@@ -22,18 +22,106 @@ export default function MyDIDView() {
   const [error, setError] = useState<string | null>(null)
 
   const { address } = useAccount()
+  // First check if identity exists using simpler getIdentity function
+  const { data: identityDocument, isLoading: isLoadingDocument, error: documentError } = useGetIdentity(address)
+  // Then get full metadata if document exists
   const { data: identityData, isLoading: isLoadingIdentity, error: identityError } = useGetIdentityMetadata(address)
+
+  // Debug loggings
+  useEffect(() => {
+    if (address) {
+      console.log("MyDIDView - Address:", address)
+      console.log("MyDIDView - Document:", identityDocument)
+      console.log("MyDIDView - Document Error:", documentError)
+      console.log("MyDIDView - Identity Data:", identityData)
+      console.log("MyDIDView - Identity Error:", identityError)
+      console.log("MyDIDView - Loading Document:", isLoadingDocument)
+      console.log("MyDIDView - Loading Identity:", isLoadingIdentity)
+    }
+  }, [address, identityDocument, documentError, identityData, identityError, isLoadingDocument, isLoadingIdentity])
 
   // Fetch metadata from IPFS when identity data is available
   useEffect(() => {
     const loadMetadata = async () => {
-      if (!identityData || !address) {
+      if (!address) {
         setLoading(false)
         return
       }
 
-      const document = identityData.document as string
-      if (!document || document === "") {
+      // If still loading document, wait
+      if (isLoadingDocument) {
+        return
+      }
+
+      // Check if document exists first
+      // Note: documentError might be set even if the call succeeds but returns empty string
+      // So we check the actual document value first
+      const docValue = typeof identityDocument === "string" ? identityDocument : ""
+      if (!docValue || docValue === "" || docValue === "0x") {
+        // Only show error if we actually got an error, not just empty result
+        if (documentError && !isLoadingDocument) {
+          console.error("Document error:", documentError)
+          setError("Failed to fetch identity. Please check your connection and try again.")
+        } else {
+          setError("No identity found for this address")
+        }
+        setLoading(false)
+        return
+      }
+
+      // If we have a document, clear any previous errors
+      if (docValue && docValue !== "" && docValue !== "0x") {
+        setError(null)
+      }
+
+      // If still loading metadata, wait
+      if (isLoadingIdentity) {
+        return
+      }
+
+      // Handle contract errors for metadata
+      // If metadata call fails but we have a document, use the document to fetch from IPFS
+      if (identityError && docValue && docValue !== "" && docValue !== "0x") {
+        console.warn("Metadata call failed, but document exists. Fetching from IPFS:", docValue)
+        try {
+          setLoading(true)
+          setError(null)
+          const fetchedMetadata = await fetchMetadataFromIPFS(docValue)
+          setMetadata(fetchedMetadata)
+          setLoading(false)
+          return
+        } catch (err) {
+          const errorMessage = err instanceof Error ? err.message : "Failed to load metadata from IPFS"
+          console.error("IPFS fetch error:", err)
+          setError(errorMessage)
+          setLoading(false)
+          return
+        }
+      }
+
+      // If no metadata data, try to fetch from document
+      if (!identityData) {
+        if (docValue && docValue !== "" && docValue !== "0x") {
+          try {
+            setLoading(true)
+            setError(null)
+            const fetchedMetadata = await fetchMetadataFromIPFS(docValue)
+            setMetadata(fetchedMetadata)
+          } catch (err) {
+            const errorMessage = err instanceof Error ? err.message : "Failed to load metadata"
+            setError(errorMessage)
+            console.error("Error fetching metadata:", err)
+          } finally {
+            setLoading(false)
+          }
+        }
+        return
+      }
+
+      // Type guard for identityData
+      const identityDataTyped = identityData as { document?: string; updatedAt?: bigint; version?: bigint; lastUpdater?: string } | null
+      const document = identityDataTyped?.document || docValue
+      if (!document || document === "" || document === "0x") {
         setError("No identity found for this address")
         setLoading(false)
         return
@@ -54,7 +142,7 @@ export default function MyDIDView() {
     }
 
     loadMetadata()
-  }, [identityData, address])
+  }, [identityData, identityDocument, address, identityError, documentError, isLoadingIdentity, isLoadingDocument])
 
   const didAddress = address ? `did:rsk:${address}` : "Not connected"
 
@@ -87,7 +175,7 @@ export default function MyDIDView() {
     )
   }
 
-  if (isLoadingIdentity || loading) {
+  if (isLoadingDocument || isLoadingIdentity || loading) {
     return (
       <section className="max-w-3xl mx-auto">
         <div className="arcane-card-bg border-2 border-white/40 p-10 relative group">
@@ -101,14 +189,40 @@ export default function MyDIDView() {
     )
   }
 
-  if (error || identityError || !identityData || !identityData.document || identityData.document === "") {
+  // Show error state if there's an error or no identity data
+  // Only show error if we're not loading and have confirmed there's no document
+  const docValueCheck = typeof identityDocument === "string" ? identityDocument : ""
+  const hasNoIdentity = !isLoadingDocument && !isLoadingIdentity && 
+    (!docValueCheck || docValueCheck === "" || docValueCheck === "0x") &&
+    !identityData
+
+  if (error || (hasNoIdentity && !docValueCheck)) {
     return (
       <section className="max-w-3xl mx-auto">
         <div className="arcane-card-bg border-2 border-white/40 p-10 relative group">
           <div className="relative z-10">
-            <div className="bg-red-500/20 border-2 border-red-500/50 p-4 text-red-200 mb-4">
-              <p className="font-semibold">No Identity Found</p>
-              <p>{error || identityError?.message || "You haven't minted a DID yet. Go to the Mint tab to create one."}</p>
+            <div className="bg-white/10 border-2 border-white/30 p-6 text-center">
+              <Lock size={48} className="text-white/60 mx-auto mb-4" />
+              <h2 className="heading-arcane text-2xl off-white mb-4">No Identity Found</h2>
+              <p className="text-off-white/70 mb-6">
+                {error || "You haven't minted a DID yet. Go to the Mint tab to create your decentralized identity."}
+              </p>
+              {(documentError || identityError) && (
+                <div className="mt-4 p-3 bg-white/5 border border-white/20 rounded text-xs text-white/60">
+                  <p>Debug: {documentError?.message || identityError?.message}</p>
+                  <p>Address: {address}</p>
+                  <p>Document: {typeof identityDocument === "string" ? identityDocument : "None"}</p>
+                </div>
+              )}
+              <button
+                onClick={() => window.location.hash = "#mint"}
+                className="px-6 py-3 font-semibold transition-all duration-300 border-2 border-white/60 off-white hover:border-white"
+                style={{
+                  clipPath: "polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px))",
+                }}
+              >
+                Go to Mint Tab
+              </button>
             </div>
           </div>
         </div>
@@ -219,14 +333,14 @@ export default function MyDIDView() {
                   <Calendar size={16} />
                   Updated At
                 </div>
-                <div className="text-lg font-bold text-white">{formatDate(identityData?.updatedAt)}</div>
+                <div className="text-lg font-bold text-white">{formatDate((identityData as { updatedAt?: bigint })?.updatedAt)}</div>
               </div>
             </div>
 
             <div className="grid grid-cols-2 gap-4">
               <div className="bg-white/10 border border-white/30 p-4">
                 <div className="text-xs text-white/60 uppercase tracking-wider mb-1">Version</div>
-                <div className="text-lg font-bold text-white">{identityData?.version?.toString() || "0"}</div>
+                <div className="text-lg font-bold text-white">{((identityData as { version?: bigint })?.version)?.toString() || "0"}</div>
               </div>
 
               <div className="bg-white/10 border border-white/30 p-4">
@@ -254,7 +368,7 @@ export default function MyDIDView() {
           {/* IPFS Hash */}
           <div className="bg-white/10 border border-white/30 p-4 mt-4">
             <div className="text-xs text-white/60 uppercase tracking-wider mb-1">IPFS Hash</div>
-            <code className="text-sm text-white break-all">{identityData.document}</code>
+            <code className="text-sm text-white break-all">{(identityData as { document?: string })?.document || docValueCheck || "N/A"}</code>
           </div>
 
           {/* Warning */}
